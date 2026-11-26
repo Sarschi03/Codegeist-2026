@@ -1,0 +1,42 @@
+{
+  "name": "trace-codegeist",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "build:forge": "tsc --noEmit && vite build --mode forge",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "^0.18.0",
+    "@forge/api": "latest",
+    "@forge/bridge": "latest",
+    "@forge/kvs": "latest",
+    "@forge/resolver": "latest",
+    "convex": "latest",
+    "dexie": "latest",
+    "lucide-react": "latest",
+    "minisearch": "latest",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^4.0.0",
+    "tesseract.js": "latest"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "@types/node": "latest",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "latest",
+    "typescript": "~5.9.3",
+    "vite": "latest",
+    "vitest": "latest",
+    "eslint": "latest",
+    "typescript-eslint": "latest",
+    "prettier": "latest"
+  }
+}
