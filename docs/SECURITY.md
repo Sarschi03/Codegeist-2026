@@ -1,0 +1,9 @@
+# Security and privacy
+
+Forge resolvers derive identity from trusted Atlassian context. Forge scopes storage to the app installation. Keys also incorporate a hash of the authenticated account ID. Operations read and write the caller's namespace and require a revision for updates and deletes. Access to Jira, Confluence and Teamwork Graph runs on behalf of the active Atlassian user. Workspace boards are private.
+
+Forge saves source IDs in records and revalidates readable titles, excerpts, URLs and statuses on open or explicit refresh. Source evidence is revalidated again before Jira creation. Source URLs and canvas element links use HTTPS. Canvas imports drop supported interactive embeds and accept only encoded raster image data. Description and preview excerpts render as text. Image import re-encodes pixel data and drops metadata. Annotations and user-authored text should be handled as potentially sensitive data.
+
+The standalone relay accepts same-origin loopback requests with a required custom header and authenticates to Convex with a server-side secret. It is a single-operator development tool. Store the secret in the deployment and in the ignored local environment file. Use synthetic data in standalone modes. Convex writes check the configured secret and index data by the relay owner. The app has no external AI key or production login.
+
+OCR runs in a browser worker. There is no automatic background Rovo call. Review exports before sharing. Removing an Atlas reference does not modify its source record. Deleting a workspace removes its scene and associated active storage. Forge attempts to remove saved image chunks, including old versions, during deletion. Jira issue creation records briefly track request completion to prevent duplicates. A failed response with an ambiguous outcome asks the user to check Jira before starting a separate draft.

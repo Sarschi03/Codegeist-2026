@@ -23,23 +23,42 @@
     "dexie": "latest",
     "lucide-react": "latest",
     "minisearch": "latest",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tesseract.js": "latest",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@playwright/test": "latest",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "latest",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "latest",
     "eslint": "latest",
+    "jsdom": "^29.1.1",
     "prettier": "latest",
     "typescript": "~5.9.3",
     "typescript-eslint": "latest",
     "vite": "latest",
     "vitest": "latest"
   },
-  "type": "module"
+  "type": "module",
+  "overrides": {
+    "@excalidraw/excalidraw": {
+      "nanoid": "3.3.20"
+    },
+    "@excalidraw/mermaid-to-excalidraw": {
+      "nanoid": "5.1.16"
+    },
+    "lodash-es": "4.18.1",
+    "prosemirror-view": "1.44.0",
+    "katex": "0.18.11",
+    "@forge/manifest": {
+      "glob": "14.0.6"
+    },
+    "glob@14.0.6": {
+      "minimatch": "11.0.9"
+    }
+  }
 }
