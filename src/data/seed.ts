@@ -1,3 +1,5 @@
+import type { BinaryFileData } from '@excalidraw/excalidraw/types';
+import { checkoutImageId, makeCheckoutCapture } from './checkoutCapture';
 import { convertToExcalidrawElements } from '@excalidraw/excalidraw';
 import { emptyScene, type Scene, type Source, type Template, type Workspace } from '../shared/model';
 
@@ -15,9 +17,9 @@ export const demoSources: Source[] = [
   { id:'billing-requirements', product:'Confluence', title:'Billing Information Requirements', description:'Collect only fields required by the payment processor and document validation errors.', status:'Reference', related:['PAY-142'], retrievedAt:created },
 ];
 
-type Skeleton = Parameters<typeof convertToExcalidrawElements>[0][number];
-const rect = (id: string, x: number,y: number,width: number,height: number,strokeColor: string,backgroundColor: string): Skeleton => ({
-  id,type:'rectangle',x,y,width,height,strokeColor,backgroundColor,roughness:0,strokeWidth:1,fillStyle:'solid',roundness:{type:3},
+type Skeleton = NonNullable<Parameters<typeof convertToExcalidrawElements>[0]>[number];
+const rect = (id: string, x: number,y: number,width: number,height: number,strokeColor: string,backgroundColor: string) => ({
+  id,type:'rectangle' as const,x,y,width,height,strokeColor,backgroundColor,roughness:0,strokeWidth:1,fillStyle:'solid' as const,roundness:{type:3 as const},
 });
 const label = (id: string, x: number,y: number,text: string,fontSize: number,strokeColor: string): Skeleton => ({
   id,type:'text',x,y,text,fontSize,fontFamily:2,strokeColor,
@@ -35,22 +37,7 @@ export function makeScene(template: Template, demo = false): Scene {
       label('subheading', 24, 80, 'Review the current experience and map a clearer path to payment.', 14, '#615a73'),
       label('shot-label', 24, 138, 'CURRENT EXPERIENCE', 12, '#65578c'),
       label('flow-label', 568, 138, 'PROPOSED FLOW', 12, '#65578c'),
-      rect('shot', 24, 167, 496, 331, '#dfd9eb', '#ffffff'),
-      label('store', 46, 184, 'fieldwork.', 18, '#25203d'),
-      label('secure', 394, 188, 'Secure checkout', 11, '#6c647e'),
-      rect('shot-rule', 45, 218, 452, 1, '#e5e0ec', '#e5e0ec'),
-      label('checkout', 47, 236, 'Checkout', 24, '#25203d'),
-      label('contact', 47, 279, 'Contact information', 13, '#343047'),
-      rect('input', 47, 305, 230, 33, '#ded9e9', '#f9f8fc'),
-      label('email', 57, 315, 'Email address', 11, '#6c647e'),
-      label('address-label', 47, 355, 'Delivery address', 13, '#343047'),
-      rect('address', 47, 381, 230, 33, '#ded9e9', '#f9f8fc'),
-      label('street', 57, 391, 'Street address', 11, '#6c647e'),
-      rect('order', 301, 237, 196, 177, '#e2d9f2', '#f5f1fb'),
-      label('order-title', 316, 253, 'Order summary', 14, '#343047'),
-      label('order-copy', 316, 285, 'Everyday tote    $48.00\nShipping              $6.00\n\nTotal                   $54.00', 12, '#6c647e'),
-      rect('payment', 47, 437, 230, 34, '#5f47a8', '#684eb4'),
-      label('continue', 94, 447, 'Continue to payment', 12, '#ffffff'),
+      {id:'shot',type:'image',x:24,y:167,width:496,height:331,fileId:checkoutImageId as BinaryFileData['id'],status:'saved'},
       rect('cart', 568, 183, 95, 72, '#cec2ec', '#ede7fa'),
       label('cart-text', 594, 208, 'Cart', 17, '#392a64'),
       rect('pay', 697, 183, 108, 72, '#c0b0e8', '#e7ddfb'),
@@ -66,9 +53,9 @@ export function makeScene(template: Template, demo = false): Scene {
       label('jira-title', 585, 472, 'Improve mobile payment button', 15, '#25203d'),
     ];
     const pins = [
-      { x:266, y:423, targetId:'payment', note:'The payment button falls below the fold on mobile.' },
-      { x:264, y:291, targetId:'input', note:'Can we make the email field clearer for guest checkout?' },
-      { x:474, y:221, targetId:'order', note:'Keep the order total visible before payment.' },
+      { x:266, y:423, targetId:'shot', note:'The payment button falls below the fold on mobile.' },
+      { x:264, y:291, targetId:'shot', note:'Can we make the email field clearer for guest checkout?' },
+      { x:474, y:221, targetId:'shot', note:'Keep the order total visible before payment.' },
     ];
     for (const [i, pin] of pins.entries()) {
       const elementId = 'pin-' + (i + 1);
@@ -76,7 +63,8 @@ export function makeScene(template: Template, demo = false): Scene {
       scene.annotations.push({ id:crypto.randomUUID(), elementId, targetId:pin.targetId, number:i+1, note:pin.note, extractedText:'', resolved:false });
     }
     scene.elements = convertToExcalidrawElements(elements, { regenerateIds:false }) as unknown as Scene['elements'];
-    scene.references.jira = { source:demoSources[1], targetIds:['payment'], provenance:'manual' };
+    scene.files[checkoutImageId]=makeCheckoutCapture();
+    scene.references.jira = { source:demoSources[1], targetIds:['pin-1'], provenance:'manual' };
   } else if (template !== 'Blank canvas') {
     const steps: Record<Exclude<Template,'Blank canvas'>, string[]> = {
       'Bug report':['Observed behavior','Expected behavior','Evidence'],

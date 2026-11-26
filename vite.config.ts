@@ -43,5 +43,5 @@ export default defineConfig(({mode,command})=>{
   const enabled=command==='serve'&&env.VITE_TRACE_CONVEX==='true';
   const url=env.CONVEX_URL||env.VITE_CONVEX_URL;
   if(enabled&&(!url||!env.TRACE_RELAY_SECRET))throw new Error('Convex mode requires a deployment URL and TRACE_RELAY_SECRET.');
-  return {base:'./',plugins:[react(),...(enabled?[relay(url,env.TRACE_RELAY_SECRET)]:[])],server:{host:'localhost'}};
+  return {base:'./',plugins:[react(),...(enabled?[relay(url,env.TRACE_RELAY_SECRET)]:[])],server:{host:'localhost'},build:{rollupOptions:{output:{assetFileNames:(asset)=>asset.names.includes('eng.traineddata.gz')?'ocr/eng.traineddata.gz':'assets/[name]-[hash][extname]'}}}};
 });
