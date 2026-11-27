@@ -70,6 +70,7 @@ Trace uses React, strict TypeScript, Vite, Excalidraw, Lucide, Dexie, Zod, MiniS
 
 ## Further reading
 
+- [Engineering audit](docs/AUDIT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Five-minute demo](docs/DEMO.md)
 - [Roadmap and known limitations](docs/ROADMAP.md)

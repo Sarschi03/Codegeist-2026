@@ -14,7 +14,7 @@ Register and install the Forge app on an Atlassian developer site. Exercise each
 - Forge retrieves a bounded batch of source results. Search continuation and project discovery are future improvements.
 - Local OCR currently bundles English. Manual feedback and recognition of visible text support screenshots. Arbitrary visual interpretation and optional semantic models are future work.
 - Crop is non-destructive and inserts a new image. Reset rotation before OCR on a rotated image.
-- Issue creation supports standard issue types and reports custom required fields. Subtasks, project-specific priority mapping, Jira screenshot attachment, and other custom create fields need additional project configuration and UI.
+- Issue creation supports standard issue types and reports custom required fields. Subtasks, project-specific priority mapping and other custom create fields need additional project configuration and UI.
 - The Rovo agent accepts workspace IDs and serialized scene selections through Atlassian's entry points. Eligible sites control Rovo, Graph and MCP access.
-- Older Forge image versions remain available in the owner's storage until the workspace is deleted. Production-scale garbage collection and quotas per installation need a follow-up.
+- Staged uploads expire and removed images are reclaimed on successful saves. Production-scale reconciliation for legacy orphans and quotas per installation need a follow-up.
 - Marketplace listing, review and submission remain pending. Multi-product Forge listings have separate eligibility requirements.

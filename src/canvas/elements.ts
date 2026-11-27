@@ -1,15 +1,38 @@
 import {
   CaptureUpdateAction,
   convertToExcalidrawElements,
+  newElementWith,
 } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 import type { Scene, Source } from "../shared/model";
 export type Skeleton = NonNullable<
   Parameters<typeof convertToExcalidrawElements>[0]
 >[number];
-export function addElements(api: ExcalidrawImperativeAPI, items: Skeleton[]) {
+export function addElements(
+  api: ExcalidrawImperativeAPI,
+  items: Skeleton[],
+  links: { arrowId: string; from: string; to: string }[] = [],
+) {
   const added = convertToExcalidrawElements(items, { regenerateIds: false });
-  const elements = [...api.getSceneElementsIncludingDeleted(), ...added];
+  const connected = new Map(links.map((link) => [link.arrowId, link]));
+  const elements = [...api.getSceneElementsIncludingDeleted(), ...added].map(
+    (element) => {
+      const arrow = connected.get(element.id);
+      if (arrow && element.type === "arrow")
+        return newElementWith(element, {
+          startBinding: { elementId: arrow.from, focus: 0, gap: 8 },
+          endBinding: { elementId: arrow.to, focus: 0, gap: 8 },
+        });
+      const bind = links
+        .filter(({ from, to }) => from === element.id || to === element.id)
+        .map(({ arrowId: id }) => ({ id, type: "arrow" as const }));
+      return bind.length
+        ? newElementWith(element, {
+            boundElements: [...(element.boundElements ?? []), ...bind],
+          })
+        : element;
+    },
+  );
   api.updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
   return elements as unknown as Scene["elements"];
 }

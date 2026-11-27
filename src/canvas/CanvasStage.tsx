@@ -96,6 +96,7 @@ export function CanvasStage({
   });
   useEffect(() => {
     const paste = (event: ClipboardEvent) => {
+      if (document.querySelector("dialog[open]")) return;
       if (
         event.target instanceof HTMLElement &&
         event.target.closest("input, textarea, [contenteditable]")
@@ -224,23 +225,30 @@ export function CanvasStage({
             label={label}
             aria-pressed={tool === id && !regionMode}
             className={tool === id && !regionMode ? "selected" : ""}
+            disabled={!api}
             onClick={() => api?.setActiveTool({ type: id })}
           >
             <Icon size={17} />
           </IconButton>
         ))}
         <div className="rail-divider" />
-        <IconButton label="Insert sticky note" onClick={onSticky}>
+        <IconButton
+          label="Insert sticky note"
+          onClick={onSticky}
+          disabled={!api}
+        >
           <StickyNote size={17} />
         </IconButton>
         <IconButton
           label="Upload image"
+          disabled={!api}
           onClick={() => picker.current?.click()}
         >
           <ImagePlus size={17} />
         </IconButton>
         <IconButton
           label="Fit to canvas"
+          disabled={!api}
           onClick={() =>
             api?.scrollToContent(undefined, {
               fitToContent: true,

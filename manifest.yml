@@ -1,4 +1,12 @@
 modules:
+  jira:entityProperty:
+    - key: trace-creation-token
+      entityType: issue
+      propertyKey: trace-issue-creation
+      values:
+        - path: token
+          type: string
+          searchAlias: traceCreationToken
   jira:globalPage:
     - key: trace-workspace
       resource: trace-ui

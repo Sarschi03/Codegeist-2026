@@ -21,6 +21,17 @@ export function ownerKey(accountId: unknown) {
 const idSchema = z.uuid();
 const fileKeySchema = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+function validImageSignature(mime: string, data: string) {
+  const prefix = Buffer.from(data.split(",")[1].slice(0, 20), "base64");
+  if (mime === "image/png")
+    return prefix.subarray(0, 8).toString("hex") === "89504e470d0a1a0a";
+  if (mime === "image/jpeg")
+    return prefix.subarray(0, 3).toString("hex") === "ffd8ff";
+  return (
+    prefix.toString("ascii", 0, 4) === "RIFF" &&
+    prefix.toString("ascii", 8, 12) === "WEBP"
+  );
+}
 const dataSchema = z
   .object({
     id: fileKeySchema,
@@ -33,7 +44,8 @@ const dataSchema = z
   .refine(
     (file) =>
       file.dataURL.startsWith("data:" + file.mimeType + ";") &&
-      bytes(file) <= limits.assetBytes,
+      bytes(file) <= limits.assetBytes &&
+      validImageSignature(file.mimeType, file.dataURL),
   );
 const assetsSchema = z
   .record(fileKeySchema, hashSchema)
@@ -84,6 +96,14 @@ export async function get(owner: string, id: string) {
   const { summary, scene, assets } = record;
   return { ...summary, scene: { ...scene, files: {} }, assets };
 }
+
+const stagePrefix = (owner: string, id: string, hash: string) =>
+  "staged-data:" + owner + ":" + id + ":" + hash + ":";
+const stageMarker = (owner: string, id: string, hash: string) =>
+  "staged:" + owner + ":" + id + ":" + hash;
+type Stage = { count: number; fileId: string };
+const stageTtl = { unit: "HOURS", value: 1 } as const;
+
 export async function writeAsset(owner: string, input: unknown) {
   const { id, file, hash } = z
     .object({ id: idSchema, file: dataSchema, hash: hashSchema })
@@ -91,13 +111,55 @@ export async function writeAsset(owner: string, input: unknown) {
   const serialized = JSON.stringify(file);
   if (digest(serialized) !== hash)
     throw new Error("The file checksum did not match. Try saving again.");
-  const prefix = assetPrefix(owner, id) + hash + ":";
-  if (await kvs.get<number>(prefix + "count")) return;
-  const transaction = kvs.transact();
-  const chunks =
-    serialized.match(new RegExp(".{1," + chunkSize + "}", "gs")) ?? [];
-  for (const [i, chunk] of chunks.entries()) transaction.set(prefix + i, chunk);
-  await transaction.set(prefix + "count", chunks.length).execute();
+  await exclusive(owner, async () => {
+    const permanent = assetPrefix(owner, id) + hash + ":";
+    const marker = stageMarker(owner, id, hash);
+    if (
+      (await kvs.get<number>(permanent + "count")) ||
+      (await kvs.get<Stage>(marker))
+    )
+      return;
+    const active = await kvs
+      .query()
+      .where("key", WhereConditions.beginsWith("staged:" + owner + ":"))
+      .limit(limits.images * 2)
+      .getMany<Stage>();
+    if (active.results.length >= limits.images * 2)
+      throw new Error(
+        "Too many unfinished image uploads. Save an open workspace or wait for the uploads to expire.",
+      );
+    const transaction = kvs.transact();
+    const chunks =
+      serialized.match(new RegExp(".{1," + chunkSize + "}", "gs")) ?? [];
+    const prefix = stagePrefix(owner, id, hash);
+    for (const [i, chunk] of chunks.entries())
+      transaction.set(prefix + i, chunk, undefined, { ttl: stageTtl });
+    await transaction
+      .set(marker, { count: chunks.length, fileId: file.id }, undefined, {
+        ttl: stageTtl,
+      })
+      .execute();
+  });
+}
+
+async function verifiedChunks(prefix: string, count: number, hash: string) {
+  if (!count || count > 4) throw new Error("A saved asset is incomplete.");
+  const pieces = await Promise.all(
+    Array.from({ length: count }, (_, index) =>
+      kvs.get<string>(prefix + index),
+    ),
+  );
+  const serialized = pieces.join("");
+  if (digest(serialized) !== hash)
+    throw new Error("A saved asset failed its integrity check.");
+  return { pieces, file: dataSchema.parse(JSON.parse(serialized)) };
+}
+
+async function deleteChunks(prefix: string, count: number, marker: string) {
+  await kvs.batchDelete([
+    ...Array.from({ length: count }, (_, index) => ({ key: prefix + index })),
+    { key: marker },
+  ]);
 }
 export async function readAsset(
   owner: string,
@@ -113,14 +175,7 @@ export async function readAsset(
     throw new Error("This asset is no longer on the workspace.");
   const prefix = assetPrefix(owner, id) + hash + ":";
   const count = await kvs.get<number>(prefix + "count");
-  if (!count || count > 4) throw new Error("A saved asset is incomplete.");
-  const chunks = await Promise.all(
-    Array.from({ length: count }, (_, i) => kvs.get<string>(prefix + i)),
-  );
-  const serialized = chunks.join("");
-  if (digest(serialized) !== hash)
-    throw new Error("A saved asset failed its integrity check.");
-  return dataSchema.parse(JSON.parse(serialized));
+  return (await verifiedChunks(prefix, count ?? 0, hash)).file;
 }
 function stripped(source: Source): Source {
   return {
@@ -156,19 +211,38 @@ export async function save(owner: string, input: unknown) {
       );
     if (!current && (await list(owner)).length >= limits.workspaces)
       throw new Error("Workspace limit reached.");
-    const existing = await Promise.all(
-      Object.entries(assets).map(
-        async ([id, hash]) =>
-          current?.assets[id] === hash ||
-          Boolean(
-            await kvs.get<number>(
-              assetPrefix(owner, workspace.id) + hash + ":count",
-            ),
-          ),
-      ),
-    );
-    if (existing.some((valid) => !valid))
-      throw new Error("An image upload was interrupted. Save again to retry.");
+    const staged: {
+      prefix: string;
+      marker: string;
+      count: number;
+      pieces: (string | undefined)[];
+      permanent: string;
+    }[] = [];
+    for (const [fileId, hash] of Object.entries(assets)) {
+      if (current?.assets[fileId] === hash) continue;
+      const prefix = assetPrefix(owner, workspace.id) + hash + ":";
+      const count = await kvs.get<number>(prefix + "count");
+      if (count) {
+        if ((await verifiedChunks(prefix, count, hash)).file.id !== fileId)
+          throw new Error("Image ID does not match its asset.");
+        continue;
+      }
+      const marker = stageMarker(owner, workspace.id, hash);
+      const entry = await kvs.get<Stage>(marker);
+      if (!entry || entry.fileId !== fileId)
+        throw new Error(
+          "An image upload was interrupted. Save again to retry.",
+        );
+      const temporary = stagePrefix(owner, workspace.id, hash);
+      const { pieces } = await verifiedChunks(temporary, entry.count, hash);
+      staged.push({
+        prefix: temporary,
+        marker,
+        count: entry.count,
+        pieces,
+        permanent: prefix,
+      });
+    }
     const { files: _files, ...scene } = workspace.scene;
     scene.references = Object.fromEntries(
       Object.entries(scene.references).map(([id, ref]) => [
@@ -187,7 +261,26 @@ export async function save(owner: string, input: unknown) {
       revision: (expected ?? 0) + 1,
       updatedAt: Date.now(),
     });
+    for (const { pieces, permanent } of staged) {
+      const transaction = kvs.transact();
+      pieces.forEach((piece, i) => transaction.set(permanent + i, piece));
+      await transaction.set(permanent + "count", pieces.length).execute();
+    }
     await kvs.set<RecordValue>(key, { summary, scene: storedScene, assets });
+    // The new revision is committed. Old bytes and staging keys can now be reclaimed.
+    await Promise.allSettled([
+      ...staged.map(({ prefix, marker, count }) =>
+        deleteChunks(prefix, count, marker),
+      ),
+      ...Object.values(current?.assets ?? {})
+        .filter((hash) => !Object.values(assets).includes(hash))
+        .map(async (hash) => {
+          const prefix = assetPrefix(owner, workspace.id) + hash + ":";
+          const count = await kvs.get<number>(prefix + "count");
+          if (count && count <= 4)
+            await deleteChunks(prefix, count, prefix + "count");
+        }),
+    ]);
     return summary;
   });
 }

@@ -1,0 +1,60 @@
+
+import { newWorkspace } from "/src/data/seed.ts";
+
+const storageKey = "trace-forge-test-board";
+const receiptKey = "trace-forge-test-receipt";
+const failedKey = "trace-forge-test-failed-save";
+const source = {
+  id: "PAY-7",
+  product: "Jira",
+  title: "Payment button clipped on mobile",
+  description: "Mobile checkout payment button is outside the visible area.",
+  status: "Open",
+  related: [],
+  retrievedAt: 1,
+};
+const board = () => JSON.parse(localStorage.getItem(storageKey) || "null");
+export const forgeRepository = {
+  async list() {
+    if (!board()) {
+      const initial = newWorkspace("Forge checkout test", "Blank canvas");
+      initial.revision = 1;
+      localStorage.setItem(storageKey, JSON.stringify(initial));
+    }
+    const { scene, ...summary } = board();
+    return [summary];
+  },
+  async get(id) { return board()?.id === id ? board() : undefined; },
+  async save(workspace, expected) {
+    const current = board();
+    if (current.revision !== expected) throw new Error("Wrong revision");
+    if (Object.values(workspace.scene.references).some((ref) => ref.provenance === "jira-created") && !localStorage.getItem(failedKey)) {
+      localStorage.setItem(failedKey, "1");
+      throw new Error("Simulated interruption while saving the Jira reference");
+    }
+    const next = { ...workspace, revision: expected + 1 };
+    localStorage.setItem(storageKey, JSON.stringify(next));
+    return next;
+  },
+};
+export const forgeContext = {
+  async search(text) { return { sources: /payment|checkout/i.test(text) ? [source] : [], warnings: [] }; },
+  async refresh() { return source; },
+  async issueTypes(project) {
+    if (project !== "PAY") throw new Error("Unknown project");
+    return [{ id: "10001", name: "Bug", required: [] }];
+  },
+  async createIssue({ project, typeId, workspaceId, revision, requestId }) {
+    const stored = board();
+    const entry = stored.scene.drafts.find((item) => item.id === requestId);
+    if (project !== "PAY" || typeId !== "10001" || stored.id !== workspaceId || stored.revision !== revision ||
+        !entry?.attempted || entry.draft.title !== "Mobile checkout CTA lost") throw new Error("The confirmed draft was not persisted");
+    if (localStorage.getItem(receiptKey)) throw new Error("Duplicate Jira create");
+    localStorage.setItem(receiptKey, JSON.stringify({ requestId, source }));
+    return source;
+  },
+  async issueReceipts(workspaceId) {
+    const receipt = JSON.parse(localStorage.getItem(receiptKey) || "null");
+    return board().id === workspaceId && receipt ? [receipt] : [];
+  },
+};

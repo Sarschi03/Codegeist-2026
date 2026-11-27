@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { EditorBoundary } from "./components/EditorBoundary";
 import { Route } from "lucide-react";
 import { loadServices } from "./data/services";
 import { db } from "./data/repository";
-import { newWorkspace } from "./data/seed";
 import {
   validateWorkspace,
   limits,
@@ -19,6 +19,14 @@ const Editor = lazy(async () => ({
   default: (await import("./pages/EditorPage")).EditorPage,
 }));
 type Services = Awaited<ReturnType<typeof loadServices>>;
+function copyDrafts(scene: Workspace["scene"]): Workspace["scene"] {
+  return {
+    ...scene,
+    drafts: scene.drafts
+      ?.filter((entry) => !entry.attempted)
+      .map(({ draft }) => ({ id: crypto.randomUUID(), draft })),
+  };
+}
 const loading = (
   <div className="loading">
     <Route size={24} />
@@ -59,6 +67,7 @@ export function App() {
         !list.length &&
         !localStorage.getItem("trace-seeded-" + next.mode)
       ) {
+        const { newWorkspace } = await import("./data/seed");
         const sample = await next.repository.save(
           newWorkspace("Checkout redesign", "Design review", true),
           null,
@@ -75,8 +84,7 @@ export function App() {
             setActive(workspace);
             if (next.mode !== "Atlassian") {
               const draft = await db.recovery.get(target);
-              if (draft && draft.revision === workspace.revision)
-                setRecovery(draft);
+              if (draft) setRecovery(draft);
             }
           }
         }
@@ -92,7 +100,7 @@ export function App() {
     void init();
   }, []);
   useEffect(() => {
-    if (!services || services.mode === "Atlassian") return;
+    if (!services) return;
     const url = active
       ? "#board=" + active.id
       : location.pathname + location.search;
@@ -122,7 +130,7 @@ export function App() {
       const backup =
         services.mode === "Atlassian" ? undefined : await db.recovery.get(id);
       if (ticket !== attempt.current) return;
-      setRecovery(backup?.revision === stored.revision ? backup : null);
+      setRecovery(backup ?? null);
       setActive(stored);
     } catch (problem) {
       notify(problem);
@@ -132,6 +140,7 @@ export function App() {
     if (!services) return;
     try {
       setError("");
+      const { newWorkspace } = await import("./data/seed");
       const saved = await services.repository.save(
         newWorkspace(name, template),
         null,
@@ -156,6 +165,7 @@ export function App() {
         await services.repository.save(
           {
             ...workspace,
+            scene: copyDrafts(workspace.scene),
             name: workspace.name.slice(0, 92) + " (copy)",
             id: crypto.randomUUID(),
             createdAt: Date.now(),
@@ -191,8 +201,9 @@ export function App() {
       const initial =
         raw?.type === "excalidraw"
           ? {
-              ...newWorkspace(
-                file.name.replace(/\.excalidraw$/i, ""),
+              ...(await import("./data/seed")).newWorkspace(
+                file.name.replace(/\.excalidraw$/i, "").slice(0, 100) ||
+                  "Imported canvas",
                 "Blank canvas",
               ),
               scene: {
@@ -206,6 +217,7 @@ export function App() {
       const saved = await services.repository.save(
         {
           ...imported,
+          scene: copyDrafts(imported.scene),
           id: crypto.randomUUID(),
           revision: 0,
           createdAt: Date.now(),
@@ -245,22 +257,24 @@ export function App() {
   return (
     <>
       {active ? (
-        <Suspense fallback={loading}>
-          <Editor
-            key={active.id + "-" + active.revision}
-            initial={active}
-            repository={services.repository}
-            context={services.context}
-            mode={services.mode}
-            theme={theme}
-            toggle={toggle}
-            close={close}
-            boards={[
-              { label: "Open workspace dashboard", run: close },
-              ...commands,
-            ]}
-          />
-        </Suspense>
+        <EditorBoundary key={active.id + "-" + active.revision} close={close}>
+          <Suspense fallback={loading}>
+            <Editor
+              key={active.id + "-" + active.revision}
+              initial={active}
+              repository={services.repository}
+              context={services.context}
+              mode={services.mode}
+              theme={theme}
+              toggle={toggle}
+              close={close}
+              boards={[
+                { label: "Open workspace dashboard", run: close },
+                ...commands,
+              ]}
+            />
+          </Suspense>
+        </EditorBoundary>
       ) : (
         <WorkspacePage
           boards={boards}
@@ -298,17 +312,29 @@ export function App() {
             className="button compact"
             onClick={() => {
               const draft = recovery;
+              const conflict = active?.revision !== draft.revision;
+              const candidate = conflict
+                ? {
+                    ...draft,
+                    id: crypto.randomUUID(),
+                    revision: 0,
+                    name: draft.name.slice(0, 86) + " (recovered)",
+                    scene: copyDrafts(draft.scene),
+                  }
+                : draft;
               void services.repository
-                .save(draft, draft.revision)
+                .save(candidate, conflict ? null : draft.revision)
                 .then((saved) => {
                   setActive(saved);
                   setRecovery(null);
-                  return db.recovery.delete(saved.id);
+                  return db.recovery.delete(draft.id);
                 })
                 .catch(notify);
             }}
           >
-            Restore draft
+            {active?.revision === recovery.revision
+              ? "Restore draft"
+              : "Restore as copy"}
           </button>
           <button
             className="button compact"

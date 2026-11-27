@@ -81,6 +81,8 @@ export const forgeContext: ContextProvider = {
   search: (text) => invoke("context.search", { text }),
   refresh: (product, id) => invoke("context.refresh", { product, id }),
   graphLinks: (id) => invoke("context.graph-links", { id }),
+  issueFields: (project, typeId) => invoke("jira.fields", { project, typeId }),
   issueTypes: (project) => invoke("jira.types", { project }),
+  issueReceipts: (workspaceId) => invoke("jira.receipts", { workspaceId }),
   createIssue: (input) => invoke("jira.create", input),
 };

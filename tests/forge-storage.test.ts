@@ -1,6 +1,13 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { emptyScene, type Workspace } from "../src/shared/model";
-import { get, ownerKey, save } from "../src/forge/workspaces";
+import {
+  get,
+  ownerKey,
+  readAsset,
+  save,
+  writeAsset,
+} from "../src/forge/workspaces";
 
 const store = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("@forge/kvs", () => ({
@@ -17,6 +24,22 @@ vi.mock("@forge/kvs", () => ({
     },
     delete: async (key: string) => {
       store.delete(key);
+    },
+    transact: () => {
+      const staged = new Map<string, unknown>();
+      const tx = {
+        set: (key: string, value: unknown) => {
+          staged.set(key, value);
+          return tx;
+        },
+        execute: async () => {
+          for (const [key, value] of staged) store.set(key, value);
+        },
+      };
+      return tx;
+    },
+    batchDelete: async (items: { key: string }[]) => {
+      for (const { key } of items) store.delete(key);
     },
     query: () => ({
       where: (_name: string, prefix: string) => ({
@@ -62,6 +85,44 @@ describe("Forge owner boundaries", () => {
     await expect(
       save(bob, { workspace: board, expected: 1, assets: {} }),
     ).rejects.toThrow(/changed elsewhere/);
+  });
+  it("stages uploads privately, promotes matching bytes and reclaims removed images", async () => {
+    const owner = ownerKey("alice");
+    const board = makeBoard();
+    const file = {
+      id: "shot",
+      mimeType: "image/png",
+      dataURL:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+WL0YAAAAASUVORK5CYII=",
+      created: 1,
+    };
+    const hash = createHash("sha256")
+      .update(JSON.stringify(file))
+      .digest("hex");
+    await writeAsset(owner, { id: board.id, file, hash });
+    await expect(readAsset(owner, board.id, file.id, hash)).rejects.toThrow(
+      /no longer/,
+    );
+    await expect(
+      save(owner, {
+        workspace: board,
+        expected: null,
+        assets: { wrong: hash },
+      }),
+    ).rejects.toThrow(/interrupted/);
+    await save(owner, {
+      workspace: board,
+      expected: null,
+      assets: { [file.id]: hash },
+    });
+    await expect(readAsset(owner, board.id, file.id, hash)).resolves.toEqual(
+      file,
+    );
+    await expect(
+      readAsset(ownerKey("bob"), board.id, file.id, hash),
+    ).rejects.toThrow(/no longer/);
+    await save(owner, { workspace: board, expected: 1, assets: {} });
+    expect([...store.keys()].some((key) => key.includes(hash))).toBe(false);
   });
   it("rejects stale saves and strips cached provider details", async () => {
     const owner = ownerKey("alice");

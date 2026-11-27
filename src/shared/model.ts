@@ -23,6 +23,8 @@ export const sourceSchema = z.object({
   retrievedAt: z.number(),
 });
 export type Source = z.infer<typeof sourceSchema>;
+export type JiraCreation = Source & { attachmentWarning?: string };
+export type JiraIssueReceipt = { requestId: string; source: Source };
 export const annotationSchema = z.object({
   id: z.uuid(),
   elementId: z.string(),
@@ -34,6 +36,14 @@ export const annotationSchema = z.object({
       y: z.number(),
       width: z.number().nonnegative(),
       height: z.number().nonnegative(),
+    })
+    .optional(),
+  imageRegion: z
+    .object({
+      x: z.number().min(0).max(1),
+      y: z.number().min(0).max(1),
+      width: z.number().min(0).max(1),
+      height: z.number().min(0).max(1),
     })
     .optional(),
   note: z.string().trim().min(1).max(2000),
@@ -79,6 +89,10 @@ export const sceneSchema = z.object({
           height: z.number(),
           version: z.number(),
           isDeleted: z.boolean(),
+          groupIds: z.array(z.string()).optional(),
+          fileId: z.string().nullable().optional(),
+          text: z.string().max(50_000).optional(),
+          points: z.array(z.tuple([z.number(), z.number()])).optional(),
         })
         .passthrough(),
     )
@@ -104,7 +118,13 @@ export const sceneSchema = z.object({
   ),
   annotations: z.array(annotationSchema).max(250),
   drafts: z
-    .array(z.object({ id: z.uuid(), draft: draftSchema }))
+    .array(
+      z.object({
+        id: z.uuid(),
+        draft: draftSchema,
+        attempted: z.boolean().optional(),
+      }),
+    )
     .max(20)
     .optional(),
   references: z.record(
@@ -112,7 +132,8 @@ export const sceneSchema = z.object({
     z.object({
       source: sourceSchema,
       targetIds: z.array(z.string()).max(3500),
-      provenance: z.literal("manual"),
+      provenance: z.enum(["manual", "jira-created"]),
+      createdFromDraftId: z.uuid().optional(),
     }),
   ),
 });
@@ -158,6 +179,13 @@ export function validateWorkspace(input: unknown): Workspace {
     }),
   );
   const { files, ...scene } = workspace.scene;
+  if (
+    new Set(scene.elements.map((element) => element.id)).size !==
+    scene.elements.length
+  )
+    throw new Error("The scene contains duplicate element IDs.");
+  if (Object.entries(files).some(([key, file]) => key !== file.id))
+    throw new Error("An image ID does not match its file.");
   if (
     bytes(scene) > limits.sceneBytes ||
     bytes(files) > limits.workspaceBytes ||

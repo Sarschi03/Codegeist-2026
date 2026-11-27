@@ -105,6 +105,23 @@ export function Inspector(props: Props) {
         className="inspector-tabs"
         role="tablist"
         aria-label="Inspector views"
+        onKeyDown={(event) => {
+          const tabs = ["Annotations", "Context", "Tasks"] as const;
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+            return;
+          event.preventDefault();
+          const index = tabs.indexOf(tab);
+          const next =
+            tabs[
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? 2
+                  : (index + (event.key === "ArrowLeft" ? 2 : 1)) % 3
+            ];
+          setTab(next);
+          document.getElementById("inspector-tab-" + next)?.focus();
+        }}
       >
         {(
           [
@@ -119,6 +136,7 @@ export function Inspector(props: Props) {
             role="tab"
             aria-controls="inspector-panel"
             aria-selected={tab === name}
+            tabIndex={tab === name ? 0 : -1}
             onClick={() => setTab(name)}
           >
             <Icon size={14} />
@@ -288,6 +306,7 @@ export function Inspector(props: Props) {
                   {source.url && (
                     <a
                       title="Open source"
+                      aria-label={"Open " + source.title}
                       className="icon-button"
                       href={source.url}
                       onClick={
@@ -332,6 +351,7 @@ export function Inspector(props: Props) {
                       {source.url && (
                         <a
                           title="Open source"
+                          aria-label={"Open " + source.title}
                           className="icon-button"
                           href={source.url}
                           onClick={

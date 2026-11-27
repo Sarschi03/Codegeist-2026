@@ -14,6 +14,17 @@ export function useAutosave(
   const expected = useRef(initial.revision);
   const dirty = useRef(false);
   const timer = useRef<number>(undefined);
+  const recoveryTimer = useRef<number>(undefined);
+  const checkpoint = useCallback(() => {
+    if (!recover || recoveryTimer.current !== undefined) return;
+    recoveryTimer.current = window.setTimeout(() => {
+      recoveryTimer.current = undefined;
+      if (dirty.current)
+        void db.recovery
+          .put({ ...current.current, revision: expected.current })
+          .catch(() => undefined);
+    }, 200);
+  }, [recover]);
   const pending = useRef<Promise<boolean> | null>(null);
   const save = useCallback(
     async function flush(): Promise<boolean> {
@@ -37,6 +48,7 @@ export function useAutosave(
             if (recover)
               void db.recovery.delete(saved.id).catch(() => undefined);
           } else {
+            checkpoint();
             setStatus("Unsaved");
             timer.current = window.setTimeout(() => void flush(), 500);
           }
@@ -55,7 +67,7 @@ export function useAutosave(
         pending.current = null;
       }
     },
-    [repository, recover],
+    [repository, recover, checkpoint],
   );
   const update = useCallback(
     (change: (value: Workspace) => Workspace) => {
@@ -66,14 +78,13 @@ export function useAutosave(
       dirty.current = true;
       setWorkspace(current.current);
       setStatus("Unsaved");
+      checkpoint();
       window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => {
-        if (recover)
-          void db.recovery.put(current.current).catch(() => undefined);
         void save();
       }, 750);
     },
-    [recover, save],
+    [checkpoint, save],
   );
   useEffect(() => {
     const unload = (event: BeforeUnloadEvent) => {
@@ -93,6 +104,7 @@ export function useAutosave(
     document.addEventListener("visibilitychange", hidden);
     return () => {
       window.clearTimeout(timer.current);
+      window.clearTimeout(recoveryTimer.current);
       window.removeEventListener("beforeunload", unload);
       document.removeEventListener("visibilitychange", hidden);
     };

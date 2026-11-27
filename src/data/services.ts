@@ -1,5 +1,6 @@
-import type { Source, TaskDraft } from "../shared/model";
-import { demoSources } from "./seed";
+import type { JiraCreation, JiraIssueReceipt, Source } from "../shared/model";
+import { rankSources } from "../shared/intelligence";
+import { demoSources } from "./demoSources";
 import { localRepository, type WorkspaceRepository } from "./repository";
 export type IssueFields = { id: string; name: string; required: string[] };
 export interface ContextProvider {
@@ -7,20 +8,27 @@ export interface ContextProvider {
   search(text: string): Promise<{ sources: Source[]; warnings: string[] }>;
   refresh(product: Source["product"], id: string): Promise<Source>;
   graphLinks?(id: string): Promise<Source[]>;
+  issueFields?(project: string, typeId: string): Promise<string[]>;
   issueTypes(project: string): Promise<IssueFields[]>;
   createIssue(input: {
     project: string;
     typeId: string;
-    draft: TaskDraft;
+    workspaceId: string;
+    revision: number;
+    attachScreenshot?: boolean;
     requestId: string;
-  }): Promise<Source>;
+  }): Promise<JiraCreation>;
+  issueReceipts?(workspaceId: string): Promise<JiraIssueReceipt[]>;
 }
 const unavailable = async (): Promise<never> => {
   throw new Error("Connect Trace through Forge to create real Jira issues.");
 };
 const demoContext: ContextProvider = {
-  async search() {
-    return { sources: demoSources, warnings: [] };
+  async search(text) {
+    return {
+      sources: rankSources(text, demoSources).map(({ source }) => source),
+      warnings: [],
+    };
   },
   async refresh(product, id) {
     const source = demoSources.find(

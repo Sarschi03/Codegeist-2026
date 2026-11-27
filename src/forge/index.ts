@@ -50,10 +50,21 @@ resolver.define("context.graph-links", ({ context, payload }) => {
   identity(context);
   return linkedPages(context.cloudId, payload.id);
 });
+resolver.define("jira.fields", ({ context, payload }) => {
+  identity(context);
+  return atlassian.issueFields(payload.project, payload.typeId);
+});
 resolver.define("jira.types", ({ context, payload }) => {
   identity(context);
   return atlassian.issueTypes(payload.project);
 });
+resolver.define("jira.receipts", ({ context, payload }) =>
+  atlassian.issueReceipts(
+    identity(context),
+    payload,
+    atlassian.siteRoot(context.siteUrl),
+  ),
+);
 resolver.define("jira.create", ({ context, payload }) =>
   atlassian.createIssue(
     identity(context),

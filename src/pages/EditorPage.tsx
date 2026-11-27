@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CaptureUpdateAction,
+  newElementWith,
   exportToBlob,
   exportToSvg,
   serializeAsJSON,
@@ -44,6 +45,7 @@ import {
   type Skeleton,
 } from "../canvas/elements";
 import {
+  relativeImageRegion,
   compressImage,
   cropImage,
   readImage,
@@ -54,6 +56,7 @@ import type { ContextProvider, Mode } from "../data/services";
 import { useAutosave } from "../hooks/useAutosave";
 import {
   analyze,
+  bindingId,
   generateTasks,
   rankSources,
   taskMarkdown,
@@ -64,6 +67,7 @@ import {
   bytes,
   limits,
   type Annotation,
+  type JiraCreation,
   type Scene,
   type Source,
   type Workspace,
@@ -78,6 +82,7 @@ type ExportFormat =
   | "Selected PNG";
 type AnnotationDraft = {
   region?: Region;
+  imageRegion?: Region;
   targetId?: string;
   note: string;
   extractedText: string;
@@ -133,6 +138,7 @@ export function EditorPage({
   const [exportOpen, setExportOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [name, setName] = useState(initial.name);
+  const [editorReady, setEditorReady] = useState(false);
   const api = useRef<ExcalidrawImperativeAPI | null>(null);
   const messageTimer = useRef<number>(undefined);
   const inFlight = useRef(
@@ -161,9 +167,16 @@ export function EditorPage({
       .filter((element) => !element.isDeleted)
       .map((element) => element.id),
   );
-  const liveAnnotations = scene.annotations.filter((item) =>
-    visibleIds.has(item.elementId),
-  );
+  const liveAnnotations = scene.annotations
+    .filter((item) => visibleIds.has(item.elementId))
+    .map((item) => {
+      const related = Object.entries(scene.references).filter(
+        ([, ref]) => ref.source.id === item.linkedIssue,
+      );
+      return related.length && !related.some(([id]) => visibleIds.has(id))
+        ? { ...item, linkedIssue: undefined }
+        : item;
+    });
   const linked = [
     ...new Map(
       Object.entries(scene.references)
@@ -195,7 +208,11 @@ export function EditorPage({
 
   useEffect(() => {
     const keys = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === "k" &&
+        !document.querySelector("dialog[open]")
+      ) {
         event.preventDefault();
         event.stopImmediatePropagation();
         setPalette((value) => !value);
@@ -248,7 +265,7 @@ export function EditorPage({
     try {
       const image = await compressImage(file);
       const editor = api.current;
-      if (!editor) return;
+      if (!editor) throw new Error("Wait for the canvas to finish loading.");
       if (Object.keys(current.current.scene.files).length >= limits.images)
         throw new Error("This board reached its image limit.");
       const id = crypto.randomUUID();
@@ -280,8 +297,10 @@ export function EditorPage({
       }));
       selectElement(editor, id);
       editor.scrollToContent(id, { animate: false });
+      return true;
     } catch (problem) {
       report(problem);
+      return false;
     }
   }
   function sticky() {
@@ -322,6 +341,7 @@ export function EditorPage({
         extractedText: item.extractedText,
         targetId: item.targetId,
         region: item.region,
+        imageRegion: item.imageRegion,
       });
       return;
     }
@@ -360,16 +380,18 @@ export function EditorPage({
             throw new Error("Select an image before cropping.");
           if (region.width < 3 || region.height < 3)
             throw new Error("Drag to select a crop region.");
+          if (Number(image.angle ?? 0) !== 0)
+            throw new Error("Reset image rotation before cropping.");
           const blob = await cropImage(
             scene.files[image.fileId],
             region,
             image,
           );
-          await insertImage(
+          const inserted = await insertImage(
             new File([blob], "crop.png", { type: "image/png" }),
             { x: image.x + image.width + 36, y: image.y },
           );
-          notify("Cropped image added beside the original.");
+          if (inserted) notify("Cropped image added beside the original.");
         } catch (problem) {
           report(problem);
         }
@@ -377,7 +399,14 @@ export function EditorPage({
     } else
       setAnnotation({
         region,
-        targetId: image?.id,
+        targetId:
+          image &&
+          region.x < image.x + image.width &&
+          region.y < image.y + image.height &&
+          region.x + region.width >= image.x &&
+          region.y + region.height >= image.y
+            ? image.id
+            : undefined,
         note: "",
         extractedText: "",
       });
@@ -465,6 +494,10 @@ export function EditorPage({
           number,
           targetId: annotation.targetId,
           region: annotation.region,
+          imageRegion:
+            target?.type === "image" && annotation.region
+              ? relativeImageRegion(annotation.region, target)
+              : undefined,
           note: annotation.note.trim(),
           extractedText: annotation.extractedText,
           resolved: false,
@@ -486,7 +519,7 @@ export function EditorPage({
       !scene.files[target.fileId]
     )
       return;
-    if (Number(target.angle) !== 0) {
+    if (Number(target.angle ?? 0) !== 0) {
       notify("Reset image rotation before reading text.");
       return;
     }
@@ -494,9 +527,16 @@ export function EditorPage({
     try {
       const image = await cropImage(
         scene.files[target.fileId],
-        annotation.region && annotation.region.width > 3
-          ? annotation.region
-          : target,
+        annotation.imageRegion
+          ? {
+              x: target.x + annotation.imageRegion.x * target.width,
+              y: target.y + annotation.imageRegion.y * target.height,
+              width: annotation.imageRegion.width * target.width,
+              height: annotation.imageRegion.height * target.height,
+            }
+          : annotation.region && annotation.region.width > 3
+            ? annotation.region
+            : target,
         target,
       );
       const extractedText = await readImage(image, setOcr);
@@ -567,12 +607,38 @@ export function EditorPage({
         id: crypto.randomUUID(),
         draft,
       }));
-      setScene((before) => ({ ...before, drafts: next }));
+      const previous = current.current.scene.drafts ?? [];
+      const fresh = next.filter(
+        ({ draft }) =>
+          !previous.some(
+            (item) =>
+              item.draft.issueType === draft.issueType &&
+              item.draft.elementIds.join(",") === draft.elementIds.join(","),
+          ),
+      );
+      const available = Math.max(0, 20 - previous.length);
+      if (!fresh.length || available === 0) {
+        notify(
+          available === 0
+            ? "The workspace has 20 drafts. Review or remove a draft before adding more."
+            : "Drafts for this selection and format already exist.",
+        );
+        return;
+      }
+      setScene((before) => ({
+        ...before,
+        drafts: [...(before.drafts ?? []), ...fresh.slice(0, available)],
+      }));
     } finally {
       setBusy(false);
     }
   }
-  function addSource(source: Source, link: boolean, targets = selected) {
+  function addSource(
+    source: Source,
+    link: boolean,
+    targets = selected,
+    createdFromDraftId?: string,
+  ) {
     const editor = api.current;
     if (!editor) return;
     const existing = Object.entries(current.current.scene.references).find(
@@ -604,24 +670,47 @@ export function EditorPage({
           ]),
         ]
       : (existing?.[1].targetIds ?? []);
-    if (target && !existing)
+    const links: { arrowId: string; from: string; to: string }[] = [];
+    const existingCard =
+      existing &&
+      editor.getSceneElements().find((element) => element.id === id);
+    const card = existingCard || { ...position, width: 302, height: 77 };
+    for (const element of targetElements) {
+      if (
+        !link ||
+        element.id === id ||
+        existing?.[1].targetIds.includes(element.id) ||
+        ["freedraw", "arrow", "line", "selection"].includes(element.type)
+      )
+        continue;
+      const arrowId = crypto.randomUUID();
+      const growsRight =
+        card.x + card.width / 2 >= element.x + element.width / 2;
+      const x = growsRight ? element.x + element.width + 8 : element.x - 8;
+      const y = element.y + element.height / 2;
+      const endX = growsRight ? card.x - 8 : card.x + card.width + 8;
+      const deltaY = card.y + card.height / 2 - y;
       items.push({
+        id: arrowId,
         type: "arrow",
-        x: target.x + target.width + 5,
-        y: target.y + target.height / 2,
-        width: 30,
-        height: 0,
+        x,
+        y,
+        width: Math.abs(endX - x),
+        height: Math.abs(deltaY),
         points: [
           [0, 0],
-          [30, 0],
+          [endX - x, deltaY],
         ],
         strokeColor: "#8a70cb",
         roughness: 0,
-        end: { id },
       });
+      links.push({ arrowId, from: element.id, to: id });
+    }
     setScene((before) => ({
       ...before,
-      elements: items.length ? addElements(editor, items) : before.elements,
+      elements: items.length
+        ? addElements(editor, items, links)
+        : before.elements,
       annotations:
         source.product === "Jira" && link
           ? before.annotations.map((item) =>
@@ -631,15 +720,63 @@ export function EditorPage({
                 : item,
             )
           : before.annotations,
+      drafts: createdFromDraftId
+        ? before.drafts?.filter((item) => item.id !== createdFromDraftId)
+        : before.drafts,
       references: {
         ...before.references,
-        [id]: { source, targetIds, provenance: "manual" },
+        [id]: {
+          source,
+          targetIds,
+          provenance:
+            createdFromDraftId || existing?.[1].provenance === "jira-created"
+              ? "jira-created"
+              : "manual",
+          createdFromDraftId:
+            createdFromDraftId ?? existing?.[1].createdFromDraftId,
+        },
       },
     }));
-    notify(
-      link ? "Source linked to selection." : "Reference added to the canvas.",
-    );
+    if (!createdFromDraftId)
+      notify(
+        link ? "Source linked to selection." : "Reference added to the canvas.",
+      );
   }
+  const completeIssue =
+    useRef<(source: JiraCreation, requestId: string) => Promise<void>>();
+  completeIssue.current = async (source, requestId) => {
+    const entry = current.current.scene.drafts?.find(
+      (item) => item.id === requestId,
+    );
+    if (!entry || !api.current) return;
+    addSource(source, true, entry.draft.elementIds, requestId);
+    const persisted = await save();
+    notify(
+      persisted
+        ? source.id +
+            " created and linked." +
+            (source.attachmentWarning ? " " + source.attachmentWarning : "")
+        : source.id +
+            " exists in Jira. Retry saving the canvas to persist the reference.",
+    );
+  };
+  useEffect(() => {
+    if (!editorReady || !context.issueReceipts || !initial.scene.drafts?.length)
+      return;
+    let cancelled = false;
+    void context
+      .issueReceipts(initial.id)
+      .then(async (receipts) => {
+        for (const { source, requestId } of receipts) {
+          if (cancelled) return;
+          await completeIssue.current?.(source, requestId);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [context, editorReady, initial]);
   async function graphLinks(source: Source) {
     if (!context.graphLinks) return;
     setBusy(true);
@@ -681,8 +818,8 @@ export function EditorPage({
               ids.has(String(item.containerId)) ||
               result.edges.some(
                 ({ from, to }) =>
-                  String(JSON.stringify(item.startBinding)).includes(from) &&
-                  String(JSON.stringify(item.endBinding)).includes(to),
+                  bindingId(item.startBinding) === from &&
+                  bindingId(item.endBinding) === to,
               )),
         ),
         annotations: result.annotations,
@@ -705,15 +842,14 @@ export function EditorPage({
     );
     const elements = editor
       .getSceneElementsIncludingDeleted()
-      .filter(
-        (item) =>
-          !ids.includes(item.id) &&
-          !item.groupIds.some((id) => groups.has(id)) &&
-          !(
-            item.type === "arrow" &&
-            item.endBinding &&
-            ids.includes(item.endBinding.elementId)
-          ),
+      .map((item) =>
+        ids.includes(item.id) ||
+        item.groupIds.some((id) => groups.has(id)) ||
+        (item.type === "arrow" &&
+          item.endBinding &&
+          ids.includes(item.endBinding.elementId))
+          ? newElementWith(item, { isDeleted: true })
+          : item,
       );
     editor.updateScene({
       elements,
@@ -722,14 +858,6 @@ export function EditorPage({
     setScene((before) => ({
       ...before,
       elements: elements as unknown as Scene["elements"],
-      references: Object.fromEntries(
-        Object.entries(before.references).filter(([id]) => !ids.includes(id)),
-      ),
-      annotations: before.annotations.map((item) =>
-        item.linkedIssue === source.id
-          ? { ...item, linkedIssue: undefined }
-          : item,
-      ),
     }));
   }
   async function refresh(source: Source) {
@@ -1006,6 +1134,7 @@ export function EditorPage({
           theme={theme}
           setAPI={(editor) => {
             api.current = editor;
+            setEditorReady(true);
           }}
           onSelection={setSelected}
           onScene={(elements, files) =>
@@ -1239,6 +1368,46 @@ export function EditorPage({
           mode={mode}
           context={context}
           requestId={storedDrafts[draftIndex].id}
+          screenshotAvailable={scene.annotations.some(
+            (item) =>
+              activeDraft.elementIds.includes(item.elementId) &&
+              scene.elements.some(
+                (element) =>
+                  element.id === item.targetId &&
+                  !element.isDeleted &&
+                  element.fileId &&
+                  scene.files[element.fileId],
+              ),
+          )}
+          discard={
+            !storedDrafts[draftIndex].attempted
+              ? () => {
+                  const id = storedDrafts[draftIndex].id;
+                  setScene((before) => ({
+                    ...before,
+                    drafts: before.drafts?.filter((item) => item.id !== id),
+                  }));
+                  setDraftIndex(null);
+                }
+              : undefined
+          }
+          prepare={async () => {
+            const id = storedDrafts[draftIndex].id;
+            setScene((before) => ({
+              ...before,
+              drafts: before.drafts?.map((item) =>
+                item.id === id ? { ...item, attempted: true } : item,
+              ),
+            }));
+            if (!(await save()))
+              throw new Error(
+                "Save the canvas before confirming Jira creation.",
+              );
+            return {
+              workspaceId: current.current.id,
+              revision: current.current.revision,
+            };
+          }}
           update={(item) =>
             setScene((before) => ({
               ...before,
@@ -1253,14 +1422,10 @@ export function EditorPage({
           }}
           onClose={() => setDraftIndex(null)}
           created={(source) => {
-            addSource(source, true, activeDraft.elementIds);
-            setScene((before) => ({
-              ...before,
-              drafts: before.drafts?.filter((_, index) => index !== draftIndex),
-            }));
+            const requestId = storedDrafts[draftIndex].id;
             setDraftIndex(null);
             setCurrentTab("Context");
-            notify(source.id + " created and linked.");
+            void completeIssue.current?.(source, requestId);
           }}
         />
       )}

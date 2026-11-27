@@ -2,7 +2,7 @@
 
 ## Developer setup
 
-Create an Atlassian cloud developer site with Jira. Add Confluence to the same site if you want document retrieval. Install a Forge CLI version current enough for Preview MCP and compatible with your Node version. Run these commands from the Trace project folder.
+Create an Atlassian cloud developer site with Jira. Add Confluence to the same site if you want document retrieval. Install a Forge CLI version current enough for Preview MCP and compatible with your Node version. Create an Atlassian API token for the developer account using the Forge getting-started guide. Run these commands from the Trace project folder. Enter developer credentials only in the Forge CLI. On a registered checkout, keep the same app ID and skip registration.
 
 ```powershell
 npm ci
@@ -14,7 +14,7 @@ forge deploy -e development
 forge install --site your-site.atlassian.net --product jira -e development
 ```
 
-`forge register` replaces the placeholder app ID with an ID owned by the signed-in developer. Use the value from your registered app for later deploys. Connect the optional Confluence product from Atlassian Administration for the same site. After changing scopes, run `forge install --upgrade` for the installation. Enable Rovo and grant relevant scope access only if provided by your site.
+`forge register` replaces the placeholder app ID with an ID owned by the signed-in developer. Use the value from your registered app for later deploys. In Atlassian Administration, open the developer site and its Connected apps list. Open Trace and connect Confluence on the same site if document retrieval is needed. Grant Browse Projects and Create Issues in a sandbox Jira project, and Create Attachments if testing screenshot upload. Make Description available on the create screen for the target issue type. After changing scopes, run `forge install --upgrade` for the installation. Enable Rovo and grant relevant scope access only if provided by your site.
 
 ## Scope and API mapping
 
@@ -33,12 +33,16 @@ Atlassian installation rules can limit access to Jira or Confluence. Trace retur
 
 1. Open **Apps → Trace** in Jira. Create a workspace, paste an image, add a pin, reload, and confirm the image and annotation return.
 2. Search for an issue and a page you can access. Refresh a linked issue after changing its Jira status. Check that restricted results are absent with a user who lacks source permissions.
-3. Search from a pin and link an existing issue. Review a new draft, load available issue types with the target Jira project key and confirm creation. Check the actual issue in Jira and its canvas reference. Test a project containing required custom fields.
+3. Search from a pin and link an existing issue. Review a new draft, load available issue types with the target Jira project key and confirm creation. Check the actual issue in Jira, refresh the canvas, and confirm its persistent reference. Verify that exactly one issue was created. Use the screenshot checkbox only if its full image can be shared with the Jira project. Test a project containing a required custom field and an account without Create Issues. The indexed Trace issue property allows a repeated confirmation after an interrupted response to recover an existing issue, with a delay if Jira indexing has not caught up.
 4. Select **Linked pages** on a Confluence result with links. Review the confirmed Teamwork Graph evidence where supported.
 5. Open **Trace Companion** from the Atlassian Rovo entry point. The agent can read your workspace by ID, analyze explicit selection JSON, search as the end user and prepare drafts. The workspace ID is included in Trace JSON export.
 6. Enable Trace tools in Atlassian Administration under **Apps → Sites → Connected apps** if using an external MCP client. Use the Forge app ID with `https://mcp.atlassian.com/forge/<appId>`. Tools check the invoking account and do not expose Jira mutation operations.
 
 ## Documentation
+
+- [Forge CLI setup and secure login](https://developer.atlassian.com/platform/forge/getting-started/)
+- [Jira attachment permissions](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-attachments/)
+- [Jira issue property indexing](https://developer.atlassian.com/platform/forge/manifest-reference/modules/jira-entity-property/)
 
 - [Forge app compatibility](https://developer.atlassian.com/platform/forge/app-compatibility/)
 - [Jira issue REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/)

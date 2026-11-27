@@ -15,16 +15,27 @@ export function keywords(text: string) {
     ),
   ].slice(0, 12);
 }
+export const bindingId = (value: unknown) =>
+  value && typeof value === "object" && "elementId" in value
+    ? String(value.elementId)
+    : "";
 type Node = { id: string; label: string; dependsOn: string[] };
 export function analyze(scene: Scene, ids: string[]) {
   const visible = scene.elements.filter((element) => !element.isDeleted);
+  const visibleById = new Map(visible.map((element) => [element.id, element]));
   const selected = new Set(
     ids.length ? ids : visible.map((element) => element.id),
   );
+  const selectedShapes = visible.filter(
+    (shape) =>
+      selected.has(shape.id) &&
+      ["rectangle", "diamond", "ellipse"].includes(shape.type),
+  );
   const annotations = scene.annotations.filter(
     (item) =>
-      selected.has(item.elementId) ||
-      (item.targetId && selected.has(item.targetId)),
+      visibleById.has(item.elementId) &&
+      (selected.has(item.elementId) ||
+        (item.targetId && selected.has(item.targetId))),
   );
   const labels = visible.filter(
     (element) =>
@@ -33,28 +44,20 @@ export function analyze(scene: Scene, ids: string[]) {
       (selected.has(element.id) ||
         (typeof element.containerId === "string" &&
           selected.has(element.containerId)) ||
-        visible.some(
+        selectedShapes.some(
           (shape) =>
-            selected.has(shape.id) &&
-            ["rectangle", "diamond", "ellipse"].includes(shape.type) &&
             element.x >= shape.x &&
             element.y >= shape.y &&
             element.x + element.width <= shape.x + shape.width + 3 &&
             element.y + element.height <= shape.y + shape.height + 3,
         )),
   );
-  const bindingId = (value: unknown) =>
-    value && typeof value === "object" && "elementId" in value
-      ? String(value.elementId)
-      : "";
   const nodes: Node[] = labels
     .map((element) => {
       const shape =
-        visible.find((candidate) => candidate.id === element.containerId) ??
-        visible.find(
+        visibleById.get(String(element.containerId)) ??
+        selectedShapes.find(
           (candidate) =>
-            selected.has(candidate.id) &&
-            ["rectangle", "diamond", "ellipse"].includes(candidate.type) &&
             element.x >= candidate.x &&
             element.y >= candidate.y &&
             element.x + element.width <= candidate.x + candidate.width + 2 &&
@@ -80,8 +83,9 @@ export function analyze(scene: Scene, ids: string[]) {
   const refs = Object.entries(scene.references)
     .filter(
       ([id, ref]) =>
-        selected.has(id) ||
-        ref.targetIds.some((target) => selected.has(target)),
+        visibleById.has(id) &&
+        (selected.has(id) ||
+          ref.targetIds.some((target) => selected.has(target))),
     )
     .map(([, ref]) => ref.source.id + " " + ref.source.title);
   const text = [
@@ -112,7 +116,7 @@ export function rankSources(text: string, sources: Source[]): Match[] {
   ];
   index.addAll(unique);
   const keys = new Set(
-    text.toUpperCase().match(/\b[A-Z][A-Z0-9]+-\d+\b/g) ?? [],
+    text.toUpperCase().match(/\b[A-Z][A-Z0-9_]+-\d+\b/g) ?? [],
   );
   const scores = new Map(
     index.search(terms.join(" ")).map((item) => [String(item.id), item.score]),

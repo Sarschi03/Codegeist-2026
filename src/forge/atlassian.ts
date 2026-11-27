@@ -1,7 +1,16 @@
+import { createHash, randomUUID } from "node:crypto";
+import { get, readAsset } from "./workspaces";
 import api, { route, type APIResponse } from "@forge/api";
 import { kvs } from "@forge/kvs";
 import { z } from "zod";
-import { limits, sourceSchema, type Source } from "../shared/model";
+import {
+  draftSchema,
+  limits,
+  sourceSchema,
+  type JiraIssueReceipt,
+  type JiraCreation,
+  type Source,
+} from "../shared/model";
 import { keywords } from "../shared/intelligence";
 
 const optionalString = z.string().optional();
@@ -161,17 +170,15 @@ export async function search(text: string, site?: string) {
     ") ORDER BY lastmodified DESC";
   const jira = async () => {
     const result = await read(
-      await api
-        .asUser()
-        .requestJira(route`/rest/api/3/search/jql`, {
-          method: "POST",
-          headers: jsonHeaders,
-          body: JSON.stringify({
-            jql,
-            maxResults: limits.searchResults,
-            fields: ["summary", "description", "status", "issuelinks"],
-          }),
+      await api.asUser().requestJira(route`/rest/api/3/search/jql`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          jql,
+          maxResults: limits.searchResults,
+          fields: ["summary", "description", "status", "issuelinks"],
         }),
+      }),
       "Jira",
     );
     return z
@@ -303,6 +310,9 @@ async function requiredFields(project: string, typeId: string) {
     .parse(result);
   const list = fields.fields ?? fields.values ?? [];
   return [
+    ...(!list.some((item) => (item.fieldId ?? item.key) === "description")
+      ? ["Description is missing from the create screen"]
+      : []),
     ...list
       .filter(
         (item) =>
@@ -314,7 +324,7 @@ async function requiredFields(project: string, typeId: string) {
     ...((fields.total ?? 0) > list.length ? ["Additional Jira fields"] : []),
   ];
 }
-export async function issueTypes(input: unknown) {
+async function listIssueTypes(input: unknown) {
   const project = projectKey.parse(input);
   const result = await read(
     await api
@@ -340,52 +350,192 @@ export async function issueTypes(input: unknown) {
   const types = parsed.issueTypes
     .filter((item) => !item.subtask && (item.hierarchyLevel ?? 0) === 0)
     .slice(0, 10);
-  return Promise.all(
-    types.map(async ({ id, name }) => ({
-      id,
-      name,
-      required: await requiredFields(project, id),
-    })),
+  return types;
+}
+export async function issueTypes(input: unknown) {
+  return (await listIssueTypes(input)).map(({ id, name }) => ({
+    id,
+    name,
+    required: [],
+  }));
+}
+export function issueFields(project: unknown, typeId: unknown) {
+  return requiredFields(projectKey.parse(project), issueTypeId.parse(typeId));
+}
+
+async function attachScreenshot(
+  issue: string,
+  file: Awaited<ReturnType<typeof readAsset>>,
+) {
+  const boundary = "trace-" + randomUUID();
+  const extension =
+    file.mimeType === "image/jpeg" ? "jpg" : file.mimeType.split("/")[1];
+  const bytes = Buffer.from(file.dataURL.split(",")[1], "base64");
+  const body = Uint8Array.from(
+    Buffer.concat([
+      Buffer.from(
+        "--" +
+          boundary +
+          '\r\nContent-Disposition: form-data; name="file"; filename="trace-screenshot.' +
+          extension +
+          '"\r\nContent-Type: ' +
+          file.mimeType +
+          "\r\n\r\n",
+      ),
+      bytes,
+      Buffer.from("\r\n--" + boundary + "--\r\n"),
+    ]),
+  ).buffer;
+  const result = await api
+    .asUser()
+    .requestJira(route`/rest/api/3/issue/${issue}/attachments`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "X-Atlassian-Token": "no-check",
+      },
+      body,
+    });
+  if (!result.ok) throw new ApiError(result.status, "Jira attachment");
+}
+
+const createInput = z.object({
+  workspaceId: z.uuid(),
+  revision: z.number().int().positive(),
+  attachScreenshot: z.boolean().optional(),
+  project: projectKey,
+  typeId: issueTypeId,
+  requestId: z.uuid(),
+});
+const receiptInput = z.object({ workspaceId: z.uuid() });
+type Receipt = { project: string; typeId: string; issueKey?: string };
+const receiptKey = (owner: string, workspaceId: string, requestId: string) =>
+  ["jira-create", owner, workspaceId, requestId].join(":");
+const legacyKey = (owner: string, requestId: string) =>
+  "jira-request:" + owner + ":" + requestId;
+const propertyName = "trace-issue-creation";
+const tokenFor = (key: string) =>
+  createHash("sha256").update(key).digest("hex");
+
+async function recoverIssue(key: string, receipt: Receipt, site?: string) {
+  if (receipt.issueKey) return refresh("Jira", receipt.issueKey, site);
+  const jql =
+    "project = " +
+    receipt.project +
+    ' AND traceCreationToken = "' +
+    tokenFor(key) +
+    '"';
+  const response = await api
+    .asUser()
+    .requestJira(route`/rest/api/3/search/jql`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        jql,
+        maxResults: 2,
+        fields: ["summary", "description", "status", "issuelinks"],
+      }),
+    });
+  const { issues } = z
+    .object({ issues: z.array(jiraIssue) })
+    .parse(await read(response, "Jira"));
+  if (issues.length !== 1) return undefined;
+  const issue = issues[0];
+  const property = await api
+    .asUser()
+    .requestJira(
+      route`/rest/api/3/issue/${issue.key}/properties/${propertyName}`,
+      { headers },
+    );
+  const marker = z
+    .object({ value: z.object({ token: z.string() }) })
+    .parse(await read(property, "Jira"));
+  if (marker.value.token !== tokenFor(key)) return undefined;
+  await kvs.set(key, { ...receipt, issueKey: issue.key });
+  return jiraSource(issue, site);
+}
+
+export async function issueReceipts(
+  owner: string,
+  input: unknown,
+  site?: string,
+): Promise<JiraIssueReceipt[]> {
+  const { workspaceId } = receiptInput.parse(input);
+  const board = await get(owner, workspaceId);
+  if (!board) throw new Error("This workspace is unavailable.");
+  const results = await Promise.allSettled(
+    (board.scene.drafts ?? []).map(async ({ id: requestId }) => {
+      const receipt =
+        (await kvs.get<Receipt>(receiptKey(owner, workspaceId, requestId))) ??
+        (await kvs.get<{ issueKey?: string }>(legacyKey(owner, requestId)));
+      if (!receipt?.issueKey) return undefined;
+      return {
+        requestId,
+        source: await refresh("Jira", receipt.issueKey, site),
+      };
+    }),
+  );
+  return results.flatMap((result) =>
+    result.status === "fulfilled" && result.value ? [result.value] : [],
   );
 }
-const draftInput = z.object({
-  title: z.string().trim().min(1).max(120),
-  description: z.string().trim().min(1).max(8000),
-  criteria: z.string().max(2500),
-  missing: z.string().max(1500),
-  evidence: z.array(sourceSchema).max(10),
-});
+
 export async function createIssue(
   owner: string,
   input: unknown,
   site?: string,
-) {
-  const { project, typeId, draft, requestId } = z
-    .object({
-      project: projectKey,
-      typeId: issueTypeId,
-      draft: draftInput,
-      requestId: z.uuid(),
-    })
-    .parse(input);
-  const lock = "jira-request:" + owner + ":" + requestId;
-  const previous = await kvs.get<{ issueKey?: string }>(lock);
-  if (previous?.issueKey) return refresh("Jira", previous.issueKey, site);
-  if (previous)
+): Promise<JiraCreation> {
+  const {
+    workspaceId,
+    revision,
+    project,
+    typeId,
+    requestId,
+    attachScreenshot: attach,
+  } = createInput.parse(input);
+  const board = await get(owner, workspaceId);
+  if (!board) throw new Error("This workspace is unavailable.");
+  const key = receiptKey(owner, workspaceId, requestId);
+  const previous = await kvs.get<Receipt>(key);
+  if (previous) {
+    const recovered = await recoverIssue(key, previous, site);
+    if (recovered) return recovered;
     throw new Error(
-      "The last request may have reached Jira. Check the project before creating another issue.",
+      "Jira may already have created this issue. Wait for Jira search to index it, then check this draft again. Trace will not send a second create request.",
     );
-  const types = await issueTypes(project);
-  const selected = types.find((type) => type.id === typeId);
-  if (!selected || selected.required.length)
-    throw new Error(
-      "This project and issue type require additional Jira fields.",
-    );
-  try {
-    await kvs.set(lock, { pending: true }, { keyPolicy: "FAIL_IF_EXISTS" });
-  } catch {
-    throw new Error("The same Jira creation request is already in progress.");
   }
+  const legacy = await kvs.get<{ issueKey?: string }>(
+    legacyKey(owner, requestId),
+  );
+  if (legacy?.issueKey) return refresh("Jira", legacy.issueKey, site);
+  if (legacy)
+    throw new Error(
+      "An older Trace version already attempted this draft. Check Jira and link the existing issue from Context before creating anything again.",
+    );
+  if (board.revision !== revision)
+    throw new Error(
+      "This workspace changed. Reopen the latest revision and review the draft again.",
+    );
+  const entry = board.scene.drafts?.find(({ id }) => id === requestId);
+  if (!entry)
+    throw new Error(
+      "Save this draft on the workspace before creating a Jira issue.",
+    );
+  // Draft text and source IDs come from the caller's saved board.
+  const draft = draftSchema
+    .extend({
+      title: z.string().trim().min(1).max(120),
+      description: z.string().trim().min(1).max(8000),
+    })
+    .parse(entry.draft);
+  const supportedTypes = await listIssueTypes(project);
+  if (!supportedTypes.some((type) => type.id === typeId))
+    throw new Error("Select an issue type supported by this Jira project.");
+  const required = await requiredFields(project, typeId);
+  if (required.length)
+    throw new Error("Jira create configuration: " + required.join(", "));
+
   const evidence = await Promise.allSettled(
     draft.evidence
       .slice(0, 5)
@@ -397,17 +547,43 @@ export async function createIssue(
           item.value.product +
             " " +
             item.value.id +
-            " · " +
-            item.value.title +
             (item.value.url ? " · " + item.value.url : ""),
         ]
       : [],
+  );
+  const annotations = board.scene.annotations.filter((item) =>
+    draft.elementIds.includes(item.elementId),
+  );
+  let screenshot: Awaited<ReturnType<typeof readAsset>> | undefined;
+  if (attach) {
+    const target = board.scene.elements.find(
+      (element) =>
+        !element.isDeleted &&
+        element.type === "image" &&
+        annotations.some((item) => item.targetId === element.id),
+    );
+    const fileId = target?.fileId;
+    const hash = fileId ? board.assets[fileId] : undefined;
+    if (!fileId || !hash)
+      throw new Error(
+        "The draft screenshot is no longer available on this workspace.",
+      );
+    screenshot = await readAsset(owner, workspaceId, fileId, hash);
+  }
+  const origins = annotations.map(
+    (item) =>
+      "Annotation " +
+      item.number +
+      (item.targetId ? ", canvas element " + item.targetId : ""),
   );
   const text = [
     draft.description,
     draft.criteria ? "Acceptance criteria\n" + draft.criteria : "",
     draft.missing ? "Information to confirm\n" + draft.missing : "",
-    ...(refs.length ? ["Source evidence\n" + refs.join("\n")] : []),
+    refs.length ? "Source evidence\n" + refs.join("\n") : "",
+    "Trace workspace: " +
+      workspaceId +
+      (origins.length ? "\n" + origins.join("\n") : ""),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -419,9 +595,18 @@ export async function createIssue(
       .map((line) =>
         line
           ? { type: "paragraph", content: [{ type: "text", text: line }] }
-          : { type: "paragraph", content: [] },
+          : { type: "paragraph" },
       ),
   };
+  const receipt: Receipt = { project, typeId };
+  // Acquire the request immediately before the irreversible call.
+  try {
+    await kvs.set(key, receipt, { keyPolicy: "FAIL_IF_EXISTS" });
+  } catch {
+    throw new Error(
+      "Unable to start this Jira request. Reopen the draft to check whether it already ran.",
+    );
+  }
   const response = await api.asUser().requestJira(route`/rest/api/3/issue`, {
     method: "POST",
     headers: jsonHeaders,
@@ -432,28 +617,49 @@ export async function createIssue(
         summary: draft.title,
         description,
       },
+      properties: [{ key: propertyName, value: { token: tokenFor(key) } }],
     }),
   });
-  if (!response.ok && [400, 401, 403, 404, 422, 429].includes(response.status))
-    await kvs.delete(lock);
+  if (
+    !response.ok &&
+    [400, 401, 403, 404, 422, 429].includes(response.status)
+  ) {
+    await kvs.delete(key);
+  }
   const result = z
-    .object({ key: issueKey })
+    .object({ key: issueKey, self: optionalString })
     .parse(await read(response, "Jira"));
-  await kvs.set(
-    lock,
-    { issueKey: result.key },
-    { ttl: { unit: "DAYS", value: 30 } },
-  );
+  const receiptSaved = await kvs
+    .set(key, { ...receipt, issueKey: result.key })
+    .then(
+      () => true,
+      () => false,
+    );
+  const uploadConfirmedScreenshot = async () => {
+    if (!screenshot) return undefined;
+    try {
+      await attachScreenshot(result.key, screenshot);
+      return undefined;
+    } catch {
+      return "The issue was created, but the screenshot upload could not be confirmed. Check Attachments in Jira before uploading it again.";
+    }
+  };
   try {
-    return await refresh("Jira", result.key, site);
+    const source = await refresh("Jira", result.key, site);
+    return { ...source, attachmentWarning: await uploadConfirmedScreenshot() };
   } catch {
+    if (!receiptSaved)
+      throw new Error(
+        "Jira returned an issue key, but Trace could not save a receipt. Check this draft again after Jira indexes the issue.",
+      );
     return {
       id: result.key,
-      product: "Jira" as const,
+      product: "Jira",
       title: draft.title,
       description: "",
       status: "Created",
-      url: sourceLink(site, "/browse/" + result.key),
+      attachmentWarning: await uploadConfirmedScreenshot(),
+      url: sourceLink(site ?? siteRoot(result.self), "/browse/" + result.key),
       related: [],
       retrievedAt: Date.now(),
     };

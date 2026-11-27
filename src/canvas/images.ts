@@ -28,42 +28,74 @@ export async function compressImage(file: File) {
     bitmap.close();
   }
 }
+
+type ImageGeometry = Region & { crop?: unknown; scale?: unknown };
+export function relativeImageRegion(region: Region, element: Region): Region {
+  const clamp = (value: number) => Math.min(1, Math.max(0, value));
+  if (element.width <= 0 || element.height <= 0)
+    throw new Error("The image has invalid dimensions.");
+  const x = clamp((region.x - element.x) / element.width);
+  const y = clamp((region.y - element.y) / element.height);
+  return {
+    x,
+    y,
+    width: Math.max(
+      0,
+      clamp((region.x + region.width - element.x) / element.width) - x,
+    ),
+    height: Math.max(
+      0,
+      clamp((region.y + region.height - element.y) / element.height) - y,
+    ),
+  };
+}
 export async function cropImage(
   file: Scene["files"][string],
   region: Region,
-  element: Region,
+  element: ImageGeometry,
 ) {
   const image = new Image();
   image.src = file.dataURL;
   await image.decode();
-  const left = Math.max(0, (region.x - element.x) / element.width);
-  const top = Math.max(0, (region.y - element.y) / element.height);
-  const right = Math.min(
-    1,
-    (region.x + region.width - element.x) / element.width,
-  );
-  const bottom = Math.min(
-    1,
-    (region.y + region.height - element.y) / element.height,
-  );
-  if (right <= left || bottom <= top)
+  const relative = relativeImageRegion(region, element);
+  if (!relative.width || !relative.height)
     throw new Error("Draw the region inside the selected screenshot.");
+  const crop = element.crop as
+    | (Region & { naturalWidth: number; naturalHeight: number })
+    | null
+    | undefined;
+  const source =
+    crop && crop.naturalWidth > 0 && crop.naturalHeight > 0
+      ? {
+          x: (crop.x * image.width) / crop.naturalWidth,
+          y: (crop.y * image.height) / crop.naturalHeight,
+          width: (crop.width * image.width) / crop.naturalWidth,
+          height: (crop.height * image.height) / crop.naturalHeight,
+        }
+      : { x: 0, y: 0, width: image.width, height: image.height };
+  const scale = Array.isArray(element.scale) ? element.scale : [1, 1];
+  const horizontal = scale[0] < 0,
+    vertical = scale[1] < 0;
+  const x = horizontal ? 1 - relative.x - relative.width : relative.x;
+  const y = vertical ? 1 - relative.y - relative.height : relative.y;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round((right - left) * image.width));
-  canvas.height = Math.max(1, Math.round((bottom - top) * image.height));
-  canvas
-    .getContext("2d")
-    ?.drawImage(
-      image,
-      left * image.width,
-      top * image.height,
-      (right - left) * image.width,
-      (bottom - top) * image.height,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    );
+  canvas.width = Math.max(1, Math.round(relative.width * source.width));
+  canvas.height = Math.max(1, Math.round(relative.height * source.height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Image processing is unavailable.");
+  ctx.translate(horizontal ? canvas.width : 0, vertical ? canvas.height : 0);
+  ctx.scale(horizontal ? -1 : 1, vertical ? -1 : 1);
+  ctx.drawImage(
+    image,
+    source.x + x * source.width,
+    source.y + y * source.height,
+    relative.width * source.width,
+    relative.height * source.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
   return new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
       (blob) =>
