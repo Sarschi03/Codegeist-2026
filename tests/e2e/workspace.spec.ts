@@ -80,13 +80,11 @@ test("uploads and annotates an image, saves, reopens and exports", async ({
     context.fillText("Continue to payment", 38, 85);
     return canvas.toDataURL().split(",")[1];
   });
-  await page
-    .locator(".canvas-stage input[type=file]")
-    .setInputFiles({
-      name: "checkout.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(png, "base64"),
-    });
+  await page.locator(".canvas-stage input[type=file]").setInputFiles({
+    name: "checkout.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(png, "base64"),
+  });
   await expect(
     page.getByRole("button", { name: "Crop image", exact: true }).first(),
   ).toBeVisible();
@@ -114,7 +112,7 @@ test("uploads and annotates an image, saves, reopens and exports", async ({
     .click();
   await expect(
     page.getByRole("button", { name: "Save workspace", exact: true }),
-  ).toHaveText("Saved");
+  ).toHaveText("Saved", { timeout: 20_000 });
   await page.reload();
   await expect(page.getByRole("textbox", { name: "Canvas name" })).toHaveValue(
     name,
@@ -161,11 +159,9 @@ test("workspace management supports rename, duplicate, favorite and delete", asy
     .getByRole("button", { name: "Save workspace", exact: true })
     .click();
   await page.getByRole("button", { name: "Workspaces", exact: true }).click();
-  const card = page
-    .locator(".board-card")
-    .filter({
-      has: page.getByRole("button", { name: "Open " + name, exact: true }),
-    });
+  const card = page.locator(".board-card").filter({
+    has: page.getByRole("button", { name: "Open " + name, exact: true }),
+  });
   await card.getByRole("button", { name: "Favorite", exact: true }).click();
   await page.getByRole("button", { name: "Favorites", exact: true }).click();
   await expect(card).toBeVisible();
@@ -176,24 +172,20 @@ test("workspace management supports rename, duplicate, favorite and delete", asy
   await page
     .getByRole("button", { name: "Save workspace", exact: true })
     .click();
-  const renamed = page
-    .locator(".board-card")
-    .filter({
-      has: page.getByRole("button", {
-        name: "Open " + name + " updated",
-        exact: true,
-      }),
-    });
+  const renamed = page.locator(".board-card").filter({
+    has: page.getByRole("button", {
+      name: "Open " + name + " updated",
+      exact: true,
+    }),
+  });
   await renamed.getByRole("button", { name: "Duplicate", exact: true }).click();
   await page.getByRole("button", { name: "All boards", exact: true }).click();
-  const copy = page
-    .locator(".board-card")
-    .filter({
-      has: page.getByRole("button", {
-        name: "Open " + name + " updated (copy)",
-        exact: true,
-      }),
-    });
+  const copy = page.locator(".board-card").filter({
+    has: page.getByRole("button", {
+      name: "Open " + name + " updated (copy)",
+      exact: true,
+    }),
+  });
   await copy.getByRole("button", { name: "Delete", exact: true }).click();
   await page
     .getByRole("button", { name: "Delete workspace", exact: true })

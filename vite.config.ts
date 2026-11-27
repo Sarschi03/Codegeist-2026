@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { excalidrawAssets } from "./scripts/excalidraw-assets.ts";
@@ -30,6 +31,22 @@ const refs = {
     null
   >("trace:remove"),
 };
+async function retryExecutionTimeout<T>(request: () => Promise<T>): Promise<T> {
+  for (const wait of [200, 600]) {
+    try {
+      return await request();
+    } catch (error) {
+      // A Convex execution timeout aborts the transaction. An HTTP failure can be ambiguous.
+      if (
+        !(error instanceof Error) ||
+        !error.message.includes("Function execution timed out")
+      )
+        throw error;
+      await delay(wait);
+    }
+  }
+  return request();
+}
 function relay(url: string, secret: string): Plugin {
   const client = new ConvexHttpClient(url, { logger: false });
   return {
@@ -74,22 +91,28 @@ function relay(url: string, secret: string): Plugin {
           );
           if (op === "list")
             return send(200, {
-              result: await client.query(refs.list, { secret }),
+              result: await retryExecutionTimeout(() =>
+                client.query(refs.list, { secret }),
+              ),
             });
           if (op === "get" && typeof id === "string")
             return send(200, {
-              result: await client.query(refs.get, { secret, id }),
+              result: await retryExecutionTimeout(() =>
+                client.query(refs.get, { secret, id }),
+              ),
             });
           if (
             op === "save" &&
             (expected === null || Number.isInteger(expected))
           )
             return send(200, {
-              result: await client.mutation(refs.save, {
-                secret,
-                payload: JSON.stringify(validateWorkspace(workspace)),
-                expected,
-              }),
+              result: await retryExecutionTimeout(() =>
+                client.mutation(refs.save, {
+                  secret,
+                  payload: JSON.stringify(validateWorkspace(workspace)),
+                  expected,
+                }),
+              ),
             });
           if (
             op === "remove" &&
@@ -97,11 +120,13 @@ function relay(url: string, secret: string): Plugin {
             Number.isInteger(expected)
           )
             return send(200, {
-              result: await client.mutation(refs.remove, {
-                secret,
-                id,
-                expected,
-              }),
+              result: await retryExecutionTimeout(() =>
+                client.mutation(refs.remove, {
+                  secret,
+                  id,
+                  expected,
+                }),
+              ),
             });
           return send(400, { error: "Invalid workspace request." });
         } catch (error) {
